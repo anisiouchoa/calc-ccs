@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculadora de Risco - InCor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 20px; }
+        .result-box { color: white; border-radius: 10px; padding: 20px; text-align: center; transition: background-color 0.3s; }
+        .btn-custom { background-color: #18bc9c; color: white; font-weight: bold; width: 100%; transition: background-color 0.3s; }
+        .btn-custom:hover { background-color: #128f76; color: white; }
+        .chart-container { position: relative; height: 250px; width: 100%; margin-top: 20px; background-color: rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container pb-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card p-4">
+                <h3 class="text-center mb-4">Calculadora de Sobrevida em 5 Anos (CCS)</h3>
+                <p class="text-muted text-center mb-4">Modelo derivado e validado na coorte do Instituto do Coração (InCor).</p>
+                
+                <form id="riskForm">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Idade (anos)</label>
+                            <input type="number" class="form-control" id="age" value="65" min="18" max="110" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Índice de Massa VE (g/m²)</label>
+                            <input type="number" class="form-control" id="mass" value="114" min="40" max="250" required>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Fração de Ejeção - FEVE (%)</label>
+                            <input type="number" class="form-control" id="lvef" value="45" min="10" max="85" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold">Hemoglobina (g/dL)</label>
+                            <input type="number" step="0.1" class="form-control" id="hb" value="12.8" min="5" max="20" required>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label fw-bold">Creatinina (mg/dL)</label>
+                            <input type="number" step="0.1" class="form-control" id="creat" value="0.9" min="0.1" max="15" required>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label fw-bold">Classe NYHA</label>
+                            <select class="form-select" id="nyha">
+                                <option value="0">I</option>
+                                <option value="1">II</option>
+                                <option value="2">III</option>
+                                <option value="3">IV</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label fw-bold">Doença Art. Periférica</label>
+                            <select class="form-select" id="pad">
+                                <option value="0">Não</option>
+                                <option value="1">Sim</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-custom mt-3 py-2" onclick="calculateRisk()">Calcular Risco e Gerar Curva</button>
+                </form>
+
+                <div class="result-box mt-4" id="resultDiv" style="display: none; background-color: #0d6efd;">
+                    <h5>Probabilidade de Sobrevida em 5 Anos</h5>
+                    <h1 class="display-4 fw-bold" id="survivalResult">--%</h1>
+                    <p class="mb-0 mt-2 fw-bold" id="riskCategory" style="font-size: 1.2rem;"></p>
+                    
+                    <div class="chart-container">
+                        <canvas id="survivalChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row mt-4">
+    <div class="col-md-12 text-center text-muted" style="font-size: 0.85rem;">
+        <p class="mb-1"><strong>Validação Científica:</strong> Este nomograma preditivo foi derivado e validado internamente utilizando regressão de Cox penalizada (Elastic Net).</p>
+        <p><em>Performance na coorte de teste: C-Index de 0.759 e calibração adequada via bootstrap. As estimativas refletem o risco absoluto, mas a decisão clínica final deve ser sempre individualizada.</em></p>
+    </div>
+</div>
+<script>
+    // --- OS SEUS DADOS EXATOS DO INCOR ---
+    const mean_PI = 3.032244; 
+    const baseline_survivals = [0.979023, 0.9544186, 0.91879, 0.884625, 0.8350737]; 
+    const time_labels = ["Ano 1", "Ano 2", "Ano 3", "Ano 4", "Ano 5"];
+    
+    let survivalChart = null; 
+
+    function calculateRisk() {
+        let age = parseFloat(document.getElementById('age').value);
+        let mass = parseFloat(document.getElementById('mass').value);
+        let lvef = parseFloat(document.getElementById('lvef').value);
+        let hb = parseFloat(document.getElementById('hb').value);
+        let creat = parseFloat(document.getElementById('creat').value);
+        let nyha = parseFloat(document.getElementById('nyha').value);
+        let pad = parseFloat(document.getElementById('pad').value);
+
+        // PI = Preditivo Linear (Coeficientes exatos da Regressão de Cox)
+        let PI = (0.0712 * age) + (0.0131 * mass) - (0.0315 * lvef) - (0.108 * hb) + (0.163 * creat) + (0.0596 * nyha) + (0.9488 * pad);
+        
+        // Hazard Ratio Individual
+        let hazard_ratio_individual = Math.exp(PI - mean_PI);
+
+        // Calcula a sobrevida para cada ano
+        let survival_curve_data = baseline_survivals.map(s0 => {
+            let prob = Math.pow(s0, hazard_ratio_individual) * 100;
+            if (prob > 100) prob = 100;
+            if (prob < 0) prob = 0;
+            return parseFloat(prob.toFixed(1)); 
+        });
+
+        // O resultado em 5 anos é o último ponto do array
+        let final_survival = survival_curve_data[4];
+
+        let resultDiv = document.getElementById('resultDiv');
+        let resultText = document.getElementById('survivalResult');
+        let riskCategory = document.getElementById('riskCategory');
+        
+        resultText.innerText = final_survival.toFixed(1) + "%";
+        
+        // --- A MUDANÇA DA COR ESTÁ AQUI ---
+        if (final_survival < 70) {
+            resultDiv.style.backgroundColor = "#c0392b"; // Alto Risco (Vermelho)
+            riskCategory.innerText = "ALTO RISCO CLÍNICO";
+        } else if (final_survival < 85) {
+            resultDiv.style.backgroundColor = "#e67e22"; // Risco Intermediário (Laranja)
+            riskCategory.innerText = "RISCO INTERMEDIÁRIO";
+        } else {
+            resultDiv.style.backgroundColor = "#0d6efd"; // Baixo Risco (Azul Vivo/Clássico)
+            riskCategory.innerText = "BAIXO RISCO CLÍNICO";
+        }
+        
+        resultDiv.style.display = "block";
+        drawChart(survival_curve_data);
+    }
+
+    function drawChart(dataPoints) {
+        const ctx = document.getElementById('survivalChart').getContext('2d');
+        
+        if (survivalChart !== null) {
+            survivalChart.destroy();
+        }
+
+        survivalChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: time_labels,
+                datasets: [{
+                    label: 'Sobrevida (%)',
+                    data: dataPoints,
+                    borderColor: '#ffffff',
+                    backgroundColor: 'rgba(255, 255, 255, 0.15)', 
+                    pointBackgroundColor: '#18bc9c', 
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                    pointRadius: 6,
+                    pointHoverRadius: 9,
+                    fill: true,
+                    tension: 0.4 
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleFont: { size: 14 },
+                        bodyFont: { size: 16, weight: 'bold' },
+                        displayColors: false,
+                        callbacks: {
+                            label: function(context) {
+                                return context.parsed.y + '% de chance de sobrevida';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 100,
+                        ticks: { color: '#ffffff', font: { weight: 'bold' } }, 
+                        grid: { color: 'rgba(255, 255, 255, 0.2)' }
+                    },
+                    x: {
+                        ticks: { color: '#ffffff', font: { weight: 'bold' } }, 
+                        grid: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+</script>
+</body>
+</html>
